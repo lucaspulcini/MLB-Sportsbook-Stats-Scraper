@@ -1,0 +1,134 @@
+import os
+import pandas as pd
+import numpy as np
+import pymysql
+from sqlalchemy import create_engine, text
+from datetime import date
+
+def connect_to_db():
+    engine = create_engine('mysql+pymysql://root:Lovetotravel0620@localhost:3306/SportsData')
+    return engine
+
+def insert_todays_props_and_stats(engine):
+    with engine.connect() as conn:
+        truncate_query = "TRUNCATE TABLE Todays_Props_and_Stats"
+        conn.execute(text(truncate_query))
+        print("Table Todays_Props_and_Stats has been truncated.")
+
+        query = """
+        INSERT INTO Todays_Props_and_Stats
+        SELECT 
+            pp.date AS game_date,
+            p.name AS pitcher_name,
+            p.hand AS pitcher_hand,
+            pp.home_away AS home_away,
+            pp.facing_team AS facing_team,
+            pp.outs AS projected_outs,
+            pp.outs_over AS outs_over_odds,
+            pp.outs_under AS outs_under_odds,
+            pp.outs_result AS outs_result,
+            pp.strikeouts AS projected_strikeouts,
+            pp.strikeouts_over AS strikeouts_over_odds,
+            pp.strikeouts_under AS strikeouts_under_odds,
+            pp.strikeouts_result AS strikeouts_result,
+            pp.walks AS projected_walks,
+            pp.walks_over AS walks_over_odds,
+            pp.walks_under AS walks_under_odds,
+            pp.walks_result AS walks_result,
+            pp.earned_runs AS projected_earned_runs,
+            pp.earned_runs_over AS earned_runs_over_odds,
+            pp.earned_runs_under AS earned_runs_under_odds,
+            pp.earned_runs_result AS earned_runs_result,
+            ps.K_percent AS pitcher_K_percent,
+            ps.BB_percent AS pitcher_BB_percent,
+            ps.WHIP AS pitcher_WHIP,
+            ps.FIP AS pitcher_FIP,
+            ts.bb_percent AS team_BB_percent,
+            ts.k_percent AS team_K_percent,
+            ts.slg AS team_SLG,
+            ts.ops AS team_OPS,
+            ts.wrc_plus AS team_wRC_plus
+        FROM 
+            Pitcher_Props pp
+        JOIN 
+            Pitchers p ON pp.pitcher_id = p.id
+        JOIN 
+            Pitcher_Stats ps ON pp.pitcher_id = ps.pitcher_id 
+                AND pp.date = ps.date 
+                AND pp.home_away = ps.location
+        JOIN 
+            Team_Mapping tm ON pp.facing_team = tm.facing_team
+        JOIN 
+            Team_Stats ts ON tm.team_name = ts.team_name
+                AND p.hand = ts.pitcher_hand
+                AND ts.location = CASE 
+                    WHEN pp.home_away = 'Home' THEN 'Away' 
+                    ELSE 'Home' 
+                END
+        WHERE 
+            pp.date = CURDATE()
+        ORDER BY 
+            pp.pitcher_id ASC;
+        """
+        result = conn.execute(text(query))
+        print(f"{result.rowcount} rows inserted into Todays_Props_and_Stats.")
+
+def update_props_results(engine, tsv_file_path):
+    df = pd.read_csv(tsv_file_path, sep='\t')
+    df = df.replace({np.nan: None})
+    df['Unnamed: 0'] = df['Unnamed: 0'].str.replace('-', ' ').str.title()
+
+    with engine.connect() as conn:
+        for index, row in df.iterrows():
+            pitcher_name = row['Unnamed: 0']  
+            outs_result = row['outs']
+            strikeouts_result = row['strikeouts']
+            walks_result = row['walks']
+            earned_runs_result = row['earned_runs']
+
+            if outs_result is None and strikeouts_result is None and walks_result is None and earned_runs_result is None:
+                print(f"Skipping update for {pitcher_name} due to all results being None.")
+                continue
+            
+            query = text("""
+                UPDATE Todays_Props_and_Stats
+                SET 
+                    outs_result = :outs_result,
+                    strikeouts_result = :strikeouts_result,
+                    walks_result = :walks_result,
+                    earned_runs_result = :earned_runs_result
+                WHERE pitcher_name = :pitcher_name;
+            """)
+
+            result = conn.execute(query, {
+                'pitcher_name': pitcher_name,
+                'outs_result': outs_result,
+                'strikeouts_result': strikeouts_result,
+                'walks_result': walks_result,
+                'earned_runs_result': earned_runs_result
+            })
+
+
+def main():
+    tsv_folder = os.path.abspath('/Users/lucas/Desktop/CS Projects/Stats Scraper/TSV Files')
+
+    if not os.path.exists(tsv_folder):
+        print(f"TSV folder does not exist: {tsv_folder}")
+        return
+
+    engine = connect_to_db()
+
+    insert_todays_props_and_stats(engine)
+
+    tsv_file_path = os.path.join(tsv_folder, 'comparison_results.tsv')
+
+    if not os.path.exists(tsv_file_path):
+        print(f"TSV file not found: {tsv_file_path}")
+        return
+    else:
+        print(f"Processing TSV file: {tsv_file_path}")
+
+    update_props_results(engine, tsv_file_path)
+
+if __name__ == "__main__":
+    main()
