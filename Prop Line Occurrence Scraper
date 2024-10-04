@@ -2,179 +2,155 @@ import os
 import re
 import unicodedata
 import pandas as pd
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
+from webdriver_manager import WebDriverManager
 from pitcher_codes import pitcher_codes
 
-def setup_webdriver():
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    return webdriver.Chrome(options=options)
 
-# Normalizes the pitcher's name (e.g., "Ranger Suárez" -> "ranger_suarez") for consistent URL formatting
-def clean_pitcher_name(pitcher_name):
-    pitcher_name = remove_accents(pitcher_name)
-    pitcher_name = re.sub(r'[ .]+', '-', pitcher_name.lower().strip('-'))
-    
-    return pitcher_name
+class PitcherGameLogScraper:
+    """
+    Scrapes pitcher game logs from MLB.com and compares the data with prop bets, storing the results in a TSV file.
+    """
 
-def scrape_pitcher_game_logs(driver, url):
-    driver.get(url)
-    
-    WebDriverWait(driver, 20).until(
-        EC.presence_of_element_located((By.ID, 'gamelogsTable'))
-    )
+    def __init__(self, driver_manager, tsv_folder='TSV Files'):
+        self.driver_manager = driver_manager
+        self.driver = self.driver_manager.get_driver()
+        self.tsv_folder = tsv_folder
 
-    soup = BeautifulSoup(driver.page_source, 'html.parser')
-    game_logs_table = soup.find('div', id='gamelogsTable')
-    rows = game_logs_table.find_all('tr', {'data-index': True})
+    @staticmethod
+    def remove_accents(input_str):
+        nfkd_form = unicodedata.normalize('NFKD', input_str)
+        return ''.join([c for c in nfkd_form if not unicodedata.combining(c)])
 
-    # Data indicies showcase the location of the column the data is stored inside.
-    data_indices = {
-        'outs_recorded': 12,
-        'strikeouts': 20,
-        'earned_runs': 15,
-        'walks_allowed': 18
-    }
+    def clean_pitcher_name(self, pitcher_name):
+        pitcher_name = self.remove_accents(pitcher_name)
+        pitcher_name = re.sub(r'[ .]+', '-', pitcher_name.lower().strip('-'))
+        return pitcher_name
 
-    game_log_data = {key: [] for key in data_indices.keys()}
+    def scrape_pitcher_game_logs(self, url):
+        self.driver.get(url)
+        WebDriverWait(self.driver, 20).until(
+            EC.presence_of_element_located((By.ID, 'gamelogsTable'))
+        )
 
-    for row in rows:
-        if 'total' in row.get('class', []):
-            continue
-        
-        columns = row.find_all('td')
-        
-        if len(columns) > max(data_indices.values()):
-            for key, idx in data_indices.items():
-                game_log_data[key].append(columns[idx].text.strip())
-        else:
-            print(f"Error: Missing expected data columns for this row in {url}.")
+        soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+        game_logs_table = soup.find('div', id='gamelogsTable')
+        rows = game_logs_table.find_all('tr', {'data-index': True})
 
-    for key in game_log_data.keys():
-        if len(game_log_data[key]) % 2 == 0:  
-            mid_index = len(game_log_data[key]) // 2
-            game_log_data[key] = game_log_data[key][:mid_index]
-
-    return game_log_data
-
-# Props are displayed in outs, while pitcher performance is recorded in innings (e.g., 17.5 outs vs 6.0 innings). A conversion is required to accurately compare the two.
-def convert_outs_prop(outs_recorded):
-    if outs_recorded is not None:
-        outs_prop = outs_recorded // 3
-        remaining_outs = outs_recorded % 3
-        return outs_prop + remaining_outs / 10
-    return None
-
-def compare_stats(pitcher_data, prop_data):
-    results = {}
-
-    for pitcher_name, stats in pitcher_data.items():
-        if pitcher_name not in prop_data:
-            print(f"{pitcher_name} not found in prop_data.")
-            continue
-
-        outs_counter, strikeouts_counter, walks_counter, earned_runs_counter = 0, 0, 0, 0
-
-        total_outs = len(stats['outs_recorded'])
-        total_strikeouts = len(stats['strikeouts'])
-        total_walks = len(stats['walks_allowed'])
-        total_earned_runs = len(stats['earned_runs'])
-
-        for outs, strikeouts, walks, earned_runs in zip(
-            stats['outs_recorded'], stats['strikeouts'], stats['walks_allowed'], stats['earned_runs']
-        ):
-            outs_value = float(outs)
-            strikeouts_value = float(strikeouts)
-            walks_value = float(walks)
-            earned_runs_value = float(earned_runs)
-
-            outs_prop = convert_outs_prop(prop_data[pitcher_name].get('outs_recorded'))
-
-            if outs_prop is not None and not pd.isna(outs_prop) and outs_prop < outs_value:
-                outs_counter += 1
-            if prop_data[pitcher_name].get('strikeouts') is not None and not pd.isna(prop_data[pitcher_name].get('strikeouts')) and prop_data[pitcher_name]['strikeouts'] < strikeouts_value:
-                strikeouts_counter += 1
-            if prop_data[pitcher_name].get('walks_allowed') is not None and not pd.isna(prop_data[pitcher_name].get('walks_allowed')) and prop_data[pitcher_name]['walks_allowed'] < walks_value:
-                walks_counter += 1
-            if prop_data[pitcher_name].get('earned_runs') is not None and not pd.isna(prop_data[pitcher_name].get('earned_runs')) and prop_data[pitcher_name]['earned_runs'] < earned_runs_value:
-                earned_runs_counter += 1
-
-        results[pitcher_name] = {
-            'outs': f"{outs_counter}/{total_outs}" if not pd.isna(prop_data[pitcher_name].get('outs_recorded')) else 'null',
-            'strikeouts': f"{strikeouts_counter}/{total_strikeouts}" if not pd.isna(prop_data[pitcher_name].get('strikeouts')) else 'null',
-            'walks': f"{walks_counter}/{total_walks}" if not pd.isna(prop_data[pitcher_name].get('walks_allowed')) else 'null',
-            'earned_runs': f"{earned_runs_counter}/{total_earned_runs}" if not pd.isna(prop_data[pitcher_name].get('earned_runs')) else 'null'
+        data_indices = {
+            'outs_recorded': 12,
+            'strikeouts': 20,
+            'earned_runs': 15,
+            'walks_allowed': 18
         }
 
-        print(f"{pitcher_name} Line: {prop_data[pitcher_name]}")
-        print(f"{pitcher_name} has gone over the outs line {results[pitcher_name]['outs']} times")
-        print(f"{pitcher_name} has gone over the strikeouts line {results[pitcher_name]['strikeouts']} times")
-        print(f"{pitcher_name} has gone over the walks line {results[pitcher_name]['walks']} times")
-        print(f"{pitcher_name} has gone over the earned runs line {results[pitcher_name]['earned_runs']} times")
-        print("-" * 40)
+        game_log_data = {key: [] for key in data_indices.keys()}
 
+        for row in rows:
+            if 'total' in row.get('class', []):
+                continue
 
-    return results
+            columns = row.find_all('td')
+            if len(columns) > max(data_indices.values()):
+                for key, idx in data_indices.items():
+                    game_log_data[key].append(columns[idx].text.strip())
+            else:
+                print(f"Error: Missing expected data columns for this row in {url}.")
 
-# Normalizes the pitcher's name (e.g., "Ranger Suárez" -> "Ranger Suarez") for consistent URL formatting.
-def remove_accents(input_str):
-    nfkd_form = unicodedata.normalize('NFKD', input_str)
-    return ''.join([c for c in nfkd_form if not unicodedata.combining(c)])
+        return game_log_data
 
-def main():
-    driver = setup_webdriver()
-    pitcher_data = {}
-    prop_data = {}
+    def compare_stats(self, pitcher_data, prop_data):
+        results = {}
 
-    tsv_folder = os.path.abspath('TSV Files')
+        for pitcher_name, stats in pitcher_data.items():
+            if pitcher_name not in prop_data:
+                print(f"{pitcher_name} not found in prop_data.")
+                continue
 
-    try:
-        file_path = os.path.join(tsv_folder, 'db_props_table.tsv')
-        df = pd.read_csv(file_path, sep='\t')
+            outs_counter, strikeouts_counter, walks_counter, earned_runs_counter = 0, 0, 0, 0
 
-        for index, row in df.iterrows():
-            pitcher_name = clean_pitcher_name(row['pitcher_name'])
+            total_outs = len(stats['outs_recorded'])
+            total_strikeouts = len(stats['strikeouts'])
+            total_walks = len(stats['walks_allowed'])
+            total_earned_runs = len(stats['earned_runs'])
 
-            
-            
-            outs_line = row['outs']
-            strikeouts_line = row['strikeouts']
-            walks_line = row['walks']
-            earned_runs_line = row['earned_runs']
+            for outs, strikeouts, walks, earned_runs in zip(
+                stats['outs_recorded'], stats['strikeouts'], stats['walks_allowed'], stats['earned_runs']
+            ):
+                outs_value = float(outs)
+                strikeouts_value = float(strikeouts)
+                walks_value = float(walks)
+                earned_runs_value = float(earned_runs)
 
-            prop_data[pitcher_name] = {
-                'outs_recorded': outs_line,
-                'strikeouts': strikeouts_line,
-                'walks_allowed': walks_line,
-                'earned_runs': earned_runs_line
+                outs_prop = float(prop_data[pitcher_name].get('outs_recorded', 0))
+
+                if outs_prop < outs_value:
+                    outs_counter += 1
+                if prop_data[pitcher_name].get('strikeouts', 0) < strikeouts_value:
+                    strikeouts_counter += 1
+                if prop_data[pitcher_name].get('walks_allowed', 0) < walks_value:
+                    walks_counter += 1
+                if prop_data[pitcher_name].get('earned_runs', 0) < earned_runs_value:
+                    earned_runs_counter += 1
+
+            results[pitcher_name] = {
+                'outs': f"{outs_counter}/{total_outs}" if total_outs else 'null',
+                'strikeouts': f"{strikeouts_counter}/{total_strikeouts}" if total_strikeouts else 'null',
+                'walks': f"{walks_counter}/{total_walks}" if total_walks else 'null',
+                'earned_runs': f"{earned_runs_counter}/{total_earned_runs}" if total_earned_runs else 'null'
             }
 
-            pitcher_id = pitcher_codes.get(pitcher_name)
-            if pitcher_id:
-                url = f'https://www.mlb.com/player/{pitcher_name}-{pitcher_id}?stats=gamelogs-r-pitching-mlb&year=2024'
-                print(f"Scraping game log data for {pitcher_name} from {url}")
+        return results
 
-                scraped_data = scrape_pitcher_game_logs(driver, url)
-                pitcher_data[pitcher_name] = scraped_data
-            else:
-                print(f"Pitcher: {pitcher_name} not found in the dictionary.")
+    def load_prop_data(self):
+        file_path = os.path.join(os.path.abspath(self.tsv_folder), 'db_props_table.tsv')
+        df = pd.read_csv(file_path, sep='\t')
 
-    finally:
-        driver.quit()
+        prop_data = {}
+        for _, row in df.iterrows():
+            pitcher_name = self.clean_pitcher_name(row['pitcher_name'])
+            prop_data[pitcher_name] = {
+                'outs_recorded': row['outs'],
+                'strikeouts': row['strikeouts'],
+                'walks_allowed': row['walks'],
+                'earned_runs': row['earned_runs']
+            }
+        return prop_data
 
-    comparison_results = compare_stats(pitcher_data, prop_data)
+    def save_comparison_results(self, results):
+        output_file_path = os.path.join(self.tsv_folder, 'comparison_results.tsv')
+        comparison_df = pd.DataFrame.from_dict(results, orient='index')
+        comparison_df.to_csv(output_file_path, sep='\t')
+        print(f"Comparison results successfully saved to {output_file_path}")
 
-    output_file_path = os.path.join(tsv_folder, 'comparison_results.tsv')
-    comparison_df = pd.DataFrame.from_dict(comparison_results, orient='index')
-    comparison_df.to_csv(output_file_path, sep='\t')
-    print(f"Comparison results successfully saved to {output_file_path}")
+    def close(self):
+        self.driver_manager.close_driver()
+
+
+def main():
+    driver_manager = WebDriverManager(headless=True)
+    scraper = PitcherGameLogScraper(driver_manager)
+
+    pitcher_data = {}
+    prop_data = scraper.load_prop_data()
+
+    for pitcher_name, pitcher_props in prop_data.items():
+        pitcher_id = pitcher_codes.get(pitcher_name)
+        if pitcher_id:
+            url = f'https://www.mlb.com/player/{pitcher_name}-{pitcher_id}?stats=gamelogs-r-pitching-mlb&year=2024'
+            print(f"Scraping game log data for {pitcher_name} from {url}")
+            scraped_data = scraper.scrape_pitcher_game_logs(url)
+            pitcher_data[pitcher_name] = scraped_data
+        else:
+            print(f"Pitcher: {pitcher_name} not found in the dictionary.")
+
+    comparison_results = scraper.compare_stats(pitcher_data, prop_data)
+    scraper.save_comparison_results(comparison_results)
+    scraper.close()
+
 
 if __name__ == "__main__":
     main()
