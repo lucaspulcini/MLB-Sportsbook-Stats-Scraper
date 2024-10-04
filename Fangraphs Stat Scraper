@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager import WebDriverManager  # Import the WebDriverManager
+from webdriver_manager import WebDriverManager 
 
 class FangraphsScraper:
     """
@@ -69,7 +69,7 @@ class FangraphsScraper:
 
 
 def main():
-    driver_manager = WebDriverManager(headless=True)  # Use the WebDriverManager
+    driver_manager = WebDriverManager(headless=True)  
     scraper = FangraphsScraper(driver_manager)
 
     data_frames = {}
