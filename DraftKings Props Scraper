@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager import WebDriverManager  # Import WebDriverManager
+from webdriver_manager import WebDriverManager  
 from teams_pitchers import teams_pitchers, name_map
 
 class DraftKingsScraper:
@@ -124,7 +124,7 @@ class DraftKingsScraper:
 
 
 def main():
-    driver_manager = WebDriverManager(headless=True)  # Instantiate the WebDriverManager
+    driver_manager = WebDriverManager(headless=True)  
     scraper = DraftKingsScraper(driver_manager)
 
     data_frames = {}
