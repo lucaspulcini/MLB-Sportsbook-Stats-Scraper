@@ -8,6 +8,9 @@ from webdriver_manager import WebDriverManager  # Import WebDriverManager
 from teams_pitchers import teams_pitchers, name_map
 
 class DraftKingsScraper:
+    """
+    Scrapes DraftKings for various prop bets and odds, storing the retrieved data in a TSV file for analysis.    
+    """
     URLS = {
         'outs_recorded': 'https://sportsbook.draftkings.com/leagues/baseball/mlb?category=pitcher-props&subcategory=outs-recorded',
         'strikeouts': 'https://sportsbook.draftkings.com/leagues/baseball/mlb?category=pitcher-props&subcategory=strikeouts-thrown-o%2Fu',
