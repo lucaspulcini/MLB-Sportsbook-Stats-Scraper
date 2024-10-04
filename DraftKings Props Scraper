@@ -1,0 +1,137 @@
+import os
+import pandas as pd
+from bs4 import BeautifulSoup
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager import WebDriverManager  # Import WebDriverManager
+from teams_pitchers import teams_pitchers, name_map
+
+class DraftKingsScraper:
+    URLS = {
+        'outs_recorded': 'https://sportsbook.draftkings.com/leagues/baseball/mlb?category=pitcher-props&subcategory=outs-recorded',
+        'strikeouts': 'https://sportsbook.draftkings.com/leagues/baseball/mlb?category=pitcher-props&subcategory=strikeouts-thrown-o%2Fu',
+        'earned_runs': 'https://sportsbook.draftkings.com/leagues/baseball/mlb?category=pitcher-props&subcategory=earned-runs-allowed',
+        'walks_allowed': 'https://sportsbook.draftkings.com/leagues/baseball/mlb?category=pitcher-props&subcategory=walks-allowed-o%2Fu'
+    }
+
+    def __init__(self, driver_manager):
+        self.driver_manager = driver_manager
+        self.driver = self.driver_manager.get_driver()
+
+    @staticmethod
+    def correct_pitcher_name(name):
+        return name_map.get(name, name)
+
+    @staticmethod
+    def extract_team_and_pitchers(prop):
+        away_img = prop.find('img', alt=lambda alt: '-logo' in alt if alt else False)
+        away_team = away_img['alt'].replace('-logo', '') if away_img else 'N/A'
+        home_img = prop.find('img', class_='second')
+        home_team = home_img['alt'].replace('-logo', '') if home_img else 'N/A'
+
+        find_pitchers = prop.find('tbody', class_='sportsbook-table__body')
+        if find_pitchers:
+            pitchers = find_pitchers.find_all('span', class_='sportsbook-row-name')
+            away_pitcher = pitchers[0].text.strip() if len(pitchers) >= 1 else 'N/A'
+            home_pitcher = pitchers[1].text.strip() if len(pitchers) >= 2 else 'N/A'
+        else:
+            away_pitcher = home_pitcher = 'N/A'
+
+        return home_team, away_team, DraftKingsScraper.correct_pitcher_name(home_pitcher), DraftKingsScraper.correct_pitcher_name(away_pitcher)
+
+    @staticmethod
+    def extract_odds(prop):
+        find_lines = prop.find('tbody', class_='sportsbook-table__body')
+
+        if find_lines:
+            lines = find_lines.find_all('td', class_='sportsbook-table__column-row')
+            return {
+                'away_pitcher_over_under': lines[0].find('div', class_='sportsbook-outcome-cell__label-line-container').text.strip() if len(lines) > 0 else 'N/A',
+                'away_pitcher_over_odds': lines[0].find('div', class_='sportsbook-outcome-cell__elements').text.strip() if len(lines) > 0 else 'N/A',
+                'away_pitcher_under_odds': lines[1].find('div', class_='sportsbook-outcome-cell__elements').text.strip() if len(lines) > 1 else 'N/A',
+                'home_pitcher_over_under': lines[2].find('div', class_='sportsbook-outcome-cell__label-line-container').text.strip() if len(lines) > 2 else 'N/A',
+                'home_pitcher_over_odds': lines[2].find('div', class_='sportsbook-outcome-cell__elements').text.strip() if len(lines) > 2 else 'N/A',
+                'home_pitcher_under_odds': lines[3].find('div', class_='sportsbook-outcome-cell__elements').text.strip() if len(lines) > 3 else 'N/A'
+            }
+        else:
+            return {
+                'away_pitcher_over_under': 'N/A',
+                'away_pitcher_over_odds': 'N/A',
+                'away_pitcher_under_odds': 'N/A',
+                'home_pitcher_over_under': 'N/A',
+                'home_pitcher_over_odds': 'N/A',
+                'home_pitcher_under_odds': 'N/A'
+            }
+
+    def is_away_pitcher_valid(self, away_team, away_pitcher):
+        return away_team in teams_pitchers and away_pitcher in teams_pitchers[away_team]
+
+    def scrape_props(self, url):
+        prop_lines = []
+
+        self.driver.get(url)
+        WebDriverWait(self.driver, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, 'sportsbook-card-accordion__children-wrapper'))
+        )
+
+        soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+        props = soup.find_all('div', class_='sportsbook-event-accordion__wrapper expanded')
+
+        for prop in props:
+            home_team, away_team, home_pitcher, away_pitcher = self.extract_team_and_pitchers(prop)
+            odds = self.extract_odds(prop)
+
+            if not self.is_away_pitcher_valid(away_team, away_pitcher):
+                home_pitcher, away_pitcher = away_pitcher, home_pitcher
+                odds['home_pitcher_over_under'], odds['away_pitcher_over_under'] = odds['away_pitcher_over_under'], odds['home_pitcher_over_under']
+                odds['home_pitcher_over_odds'], odds['away_pitcher_over_odds'] = odds['away_pitcher_over_odds'], odds['home_pitcher_over_odds']
+                odds['home_pitcher_under_odds'], odds['away_pitcher_under_odds'] = odds['away_pitcher_under_odds'], odds['home_pitcher_under_odds']
+
+            prop_lines.append({
+                "H-Team": home_team,
+                "A-Team": away_team,
+                "H-Pitcher": home_pitcher,
+                "A-Pitcher": away_pitcher,
+                "H-O/U": odds['home_pitcher_over_under'],
+                "H-OvOdds": odds['home_pitcher_over_odds'],
+                "H-UnOdds": odds['home_pitcher_under_odds'],
+                "A-O/U": odds['away_pitcher_over_under'],
+                "A-OvOdds": odds['away_pitcher_over_odds'],
+                "A-UnOdds": odds['away_pitcher_under_odds']
+            })
+
+        return pd.DataFrame(prop_lines)
+
+    def save_dataframes_to_tsv(self, data_frames, folder_name="TSV Files"):
+        project_path = os.path.dirname(os.path.abspath(__file__))
+
+        folder_path = os.path.join(project_path, folder_name)
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
+        for category, df in data_frames.items():
+            tsv_filename = f'draftkings_props_{category}.tsv'
+            save_path = os.path.join(folder_path, tsv_filename)
+            df.to_csv(save_path, sep='\t', index=False)
+            print(f"Saved {category} data to {save_path}")
+
+    def close(self):
+        self.driver_manager.close_driver()
+
+
+def main():
+    driver_manager = WebDriverManager(headless=True)  # Instantiate the WebDriverManager
+    scraper = DraftKingsScraper(driver_manager)
+
+    data_frames = {}
+    for category, url in scraper.URLS.items():
+        data_frame = scraper.scrape_props(url)
+        data_frames[category] = data_frame
+
+    scraper.save_dataframes_to_tsv(data_frames)
+    scraper.close()
+
+
+if __name__ == "__main__":
+    main()
