@@ -60,6 +60,11 @@ class PitcherGameLogScraper:
             else:
                 print(f"Error: Missing expected data columns for this row in {url}.")
 
+         for key in game_log_data.keys():
+            if len(game_log_data[key]) % 2 == 0:  
+                mid_index = len(game_log_data[key]) // 2
+                game_log_data[key] = game_log_data[key][:mid_index]
+
         return game_log_data
 
     def compare_stats(self, pitcher_data, prop_data):
